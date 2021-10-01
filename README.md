@@ -59,8 +59,8 @@ embeddings_mapping = embedding.create_word2vec_embedding_from_dataset(documents)
 To create and fit the model using the training data, execute:
 
 ```python
-from embedded_topic_model.core.model import ProdEtm, Model
-from embedded_topic_model.core.trainer import Trainer
+from embedded_topic_model.core.nets import ProdEtm, Model
+from embedded_topic_model.core.topic_models import Trainer
 
 # Declare model architecture
 prodetm = ProdEtm(
@@ -80,9 +80,9 @@ topic_model.fit(train_dataset)
 Also, to obtain the topics, topic coherence or topic diversity of the model, you can do as follows:
 
 ```python
-topics = etm_instance.get_topics(20)
-topic_coherence = etm_instance.get_topic_coherence()
-topic_diversity = etm_instance.get_topic_diversity()
+topics          = topic_model.get_topics(20)
+topic_coherence = topic_model.get_topic_coherence()
+topic_diversity = topic_model.get_topic_diversity()
 ```
 
 # Citation
