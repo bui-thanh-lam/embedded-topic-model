@@ -8,18 +8,16 @@ from typing import List
 from torch import optim
 from gensim.models import KeyedVectors
 
-from embedded_topic_model.core.model import Model
-from embedded_topic_model.utils import data
-from embedded_topic_model.utils import embedding
-from embedded_topic_model.utils import metrics
+from embedded_topic_model.core.nets import BaseModel
+from embedded_topic_model.utils import data, embedding, metrics
 
 
-class Trainer:
+class TopicModel:
     """
     Creates an embedded topic model instance. The model hyperparameters are:
 
         vocabulary (list of str): training dataset vocabulary
-        model (embedded_topic_model.core.model.Model): model to train
+        model (embedded_topic_model.core.model.BaseModel): model to train
         embeddings (str or KeyedVectors): KeyedVectors instance containing word-vector mapping for embeddings, or its path
         use_c_format_w2vec (bool): wheter input embeddings use word2vec C format. Both BIN and TXT formats are supported
         model_path (str): path to save trained model. If None, the model won't be automatically saved
@@ -46,15 +44,15 @@ class Trainer:
     def __init__(
         self,
         vocabulary: list,
-        model: Model,
+        model: BaseModel,
         embeddings=None,
         use_c_format_w2vec=False,
         model_path=None,
-        batch_size=1000,
+        batch_size=32,
         train_embeddings=False,
         lr=0.005,
         lr_factor=4.0,
-        epochs=20,
+        epochs=100,
         optimizer_type='adam',
         seed=2019,
         enc_drop=0.0,
@@ -250,8 +248,8 @@ class Trainer:
         cur_real_loss = round(cur_loss + cur_kl_theta, 2)
 
         if self.debug_mode:
-            print('Epoch {} - Learning Rate: {} - KL theta: {} - Rec loss: {} - NELBO: {}'.format(
-                epoch, self.optimizer.param_groups[0]['lr'], cur_kl_theta, cur_loss, cur_real_loss))
+            print('Epoch {:<3} \t KL Loss: {:<10.2f} Rec Loss: {:<10.2f} \t NELBO: {:<10.2f}'.format(
+                epoch, cur_kl_theta, cur_loss, cur_real_loss))
 
     def _perplexity(self, test_data) -> float:
         """Computes perplexity on document completion for a given testing data.
@@ -401,7 +399,7 @@ class Trainer:
         if self.debug_mode:
             print(f'Topics before training: {self.get_topics()}')
 
-        for epoch in range(1, self.epochs):
+        for epoch in range(1, self.epochs + 1):
             self._train(epoch)
 
             if self.eval_perplexity:
@@ -584,3 +582,15 @@ class Trainer:
         with open(model_path, 'rb') as file:
             self.model = torch.load(file)
             self.model = self.model.to(self.device)
+
+    @property
+    def num_topics(self):
+        return self.model.num_topics
+
+    @property
+    def model(self):
+        return self.__model
+
+    @model.setter
+    def model(self, model: BaseModel):
+        self.__model = model.to(self.device)
