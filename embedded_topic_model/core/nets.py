@@ -20,7 +20,7 @@ class BaseModel(nn.Module):
         if train_embeddings:
             self.rho = nn.Linear(self.rho_size, self.vocab_size, bias=False)
         else:
-            self.rho = embeddings.clone().float().to(self.device)
+            self.rho = embeddings.clone().float()
             
     def get_activation(self, act):
         if act == 'tanh':
@@ -92,12 +92,6 @@ class Etm(BaseModel):
         self.enc_drop = enc_drop
         self.t_drop = nn.Dropout(enc_drop)
         self.theta_act = self.get_activation(theta_act)
-
-        # define the word embedding matrix \rho
-        if train_embeddings:
-            self.rho = nn.Linear(self.rho_size, self.vocab_size, bias=False)
-        else:
-            self.rho = embeddings.clone().float().to(self.device)
 
         # define the matrix containing the topic embeddings
         self.alphas = nn.Linear(self.rho_size, self.num_topics, bias=False)
@@ -215,13 +209,15 @@ class DropProdEtm(Etm):
             train_embeddings=True,
             embeddings=None,
             enc_drop=0.5,
+            topic_drop=0.5,
             debug_mode=False
     ) -> None:
         super().__init__(
             vocab_size, num_topics, t_hidden_size, rho_size,
             theta_act, train_embeddings, embeddings, enc_drop, debug_mode
         )
-        self.topic_dropout = SVDropout2D(num_topics)
+        self.topic_drop = topic_drop
+        self.topic_dropout = SVDropout2D(num_topics, threshold=self.topic_drop)
         
     def get_beta(self):
         try:

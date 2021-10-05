@@ -139,3 +139,6 @@ cython_debug/
 
 # Other files
 main.py
+**/pretrained_embeddings/**
+**/data/**
+!**/data/20ng/

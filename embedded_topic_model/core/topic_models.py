@@ -7,8 +7,9 @@ import math
 from typing import List
 from torch import optim
 from gensim.models import KeyedVectors
+from gensim.scripts.glove2word2vec import glove2word2vec
 
-from embedded_topic_model.core.nets import BaseModel
+from embedded_topic_model.core.nets import Etm, ProdEtm, DropProdEtm
 from embedded_topic_model.utils import data, embedding, metrics
 
 
@@ -44,18 +45,22 @@ class TopicModel:
     def __init__(
         self,
         vocabulary: list,
-        model: BaseModel,
-        embeddings=None,
-        use_c_format_w2vec=False,
+        model_name: str,
+        num_topics: int = 50,
+        t_hidden_size: int = 800,
+        rho_size: int = 100,
+        theta_act: str = 'relu',
+        enc_drop=0.2,
+        topic_dropout=0.5,
+        embeddings="embedded_topic_model/pretrained_embeddings/glove.6B.100d.txt",
         model_path=None,
         batch_size=32,
-        train_embeddings=False,
+        train_embeddings=True,
         lr=0.005,
         lr_factor=4.0,
         epochs=100,
         optimizer_type='adam',
         seed=2019,
-        enc_drop=0.0,
         clip=0.0,
         nonmono=10,
         wdecay=1.2e-6,
@@ -69,15 +74,20 @@ class TopicModel:
         debug_mode=False,
     ):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model_name = model_name
+        self.rho_size = rho_size
         self.vocabulary = vocabulary
-        self.model = model.to(self.device)
-        self.vocabulary_size = len(self.vocabulary)
+        self.vocab_size = len(self.vocabulary)
+        self.num_topics = num_topics
+        self.t_hidden_size = t_hidden_size
+        self.theta_act = theta_act
         self.model_path = model_path
         self.batch_size = batch_size
         self.lr_factor = lr_factor
         self.epochs = epochs
         self.seed = seed
         self.enc_drop = enc_drop
+        self.topic_dropout = topic_dropout
         self.clip = clip
         self.nonmono = nonmono
         self.anneal_lr = anneal_lr
@@ -94,10 +104,30 @@ class TopicModel:
         if torch.cuda.is_available():
             torch.cuda.manual_seed(self.seed)
 
-        self.embeddings = None if train_embeddings else self._initialize_embeddings(
-            embeddings, use_c_format_w2vec=use_c_format_w2vec)
+        self.train_embeddings = train_embeddings
+        self.embeddings = None if train_embeddings else self._initialize_embeddings(embeddings)
 
+        self.model = self._get_model(model_name)
         self.optimizer = self._get_optimizer(optimizer_type, lr, wdecay)
+
+    def _get_model(self, model_name: str):
+        if self.debug_mode: print(f"Init a {model_name} instance")
+        if model_name == 'etm':
+            model = Etm(
+                self.vocab_size, self.num_topics, self.t_hidden_size, self.rho_size, self.theta_act,
+                self.train_embeddings, self.embeddings, self.enc_drop, self.debug_mode
+            )
+        if model_name == 'prodetm':
+            model = ProdEtm(
+                self.vocab_size, self.num_topics, self.t_hidden_size, self.rho_size, self.theta_act,
+                self.train_embeddings, self.embeddings, self.enc_drop, self.debug_mode
+            )
+        if model_name == 'dropprodetm':
+            model = DropProdEtm(
+                self.vocab_size, self.num_topics, self.t_hidden_size, self.rho_size, self.theta_act,
+                self.train_embeddings, self.embeddings, self.enc_drop, self.topic_dropout, self.debug_mode
+            )
+        return model.to(self.device)
 
     def __str__(self):
         return f'{self.model}'
@@ -107,50 +137,29 @@ class TopicModel:
         filename = path.split(os.path.sep)[-1]
         return filename.split('.')[-1]
 
-    def _get_embeddings_from_original_word2vec(self, embeddings_file):
-        if self._get_extension(embeddings_file) == 'txt':
-            if self.debug_mode:
-                print('Reading embeddings from original word2vec TXT file...')
-            vectors = {}
-            iterator = embedding.MemoryFriendlyFileIterator(embeddings_file)
-            for line in iterator:
-                word = line[0]
-                if word in self.vocabulary:
-                    vect = np.array(line[1:]).astype(np.float)
-                    vectors[word] = vect
-            return vectors
-        elif self._get_extension(embeddings_file) == 'bin':
-            if self.debug_mode:
-                print('Reading embeddings from original word2vec BIN file...')
-            return KeyedVectors.load_word2vec_format(
-                embeddings_file, 
-                binary=True
-            )
-        else:
-            raise Exception('Original Word2Vec file without BIN/TXT extension')
-
     def _initialize_embeddings(
         self, 
-        embeddings,
-        use_c_format_w2vec=False
+        embeddings
     ):
         vectors = embeddings if isinstance(embeddings, KeyedVectors) else {}
+        
+        try:
+            vectors = KeyedVectors.load_word2vec_format(embeddings)
+        except:
+            if self.debug_mode: print("Converting GloVe format to W2V format...")
+            w2v_output_path = ".".join(embeddings.split(".")[:-1]) + ".w2v"
+            _ = glove2word2vec(embeddings, w2v_output_path)
+            vectors = KeyedVectors.load_word2vec_format(w2v_output_path)
+        if self.debug_mode: print("Load gensim key vector file successfully!")
 
-        if use_c_format_w2vec:
-            vectors = self._get_embeddings_from_original_word2vec(embeddings)
-        elif isinstance(embeddings, str):
-            if self.debug_mode:
-                print('Reading embeddings from word2vec file...')
-            vectors = KeyedVectors.load(embeddings, mmap='r')
-
-        model_embeddings = np.zeros((self.vocabulary_size, self.model.rho_size))
+        model_embeddings = np.zeros((self.vocab_size, self.rho_size))
 
         for i, word in enumerate(self.vocabulary):
             try:
                 model_embeddings[i] = vectors[word]
             except KeyError:
                 model_embeddings[i] = np.random.normal(
-                    scale=0.6, size=(self.model.rho_size, ))
+                    scale=0.6, size=(self.rho_size, ))
         return torch.from_numpy(model_embeddings).to(self.device)
 
     def _get_optimizer(self, optimizer_type, learning_rate, wdecay):
@@ -195,12 +204,6 @@ class TopicModel:
         self.test_tokens = test_data['test']['tokens']
         self.test_counts = test_data['test']['counts']
         self.num_docs_test = len(self.test_tokens)
-        self.test_1_tokens = test_data['test1']['tokens']
-        self.test_1_counts = test_data['test1']['counts']
-        self.num_docs_test_1 = len(self.test_1_tokens)
-        self.test_2_tokens = test_data['test2']['tokens']
-        self.test_2_counts = test_data['test2']['counts']
-        self.num_docs_test_2 = len(self.test_2_tokens)
 
     def _train(self, epoch):
         self.model.train()
@@ -217,7 +220,7 @@ class TopicModel:
                 self.train_tokens,
                 self.train_counts,
                 ind,
-                self.vocabulary_size,
+                self.vocab_size,
                 self.device)
             sums = data_batch.sum(1).unsqueeze(1)
             if self.bow_norm:
@@ -251,7 +254,7 @@ class TopicModel:
             print('Epoch {:<3} \t KL Loss: {:<10.2f} Rec Loss: {:<10.2f} \t NELBO: {:<10.2f}'.format(
                 epoch, cur_kl_theta, cur_loss, cur_real_loss))
 
-    def _perplexity(self, test_data) -> float:
+    def _perplexity(self) -> float:
         """Computes perplexity on document completion for a given testing data.
 
         The document completion task is described on the original ETM's article: https://arxiv.org/pdf/1907.04907.pdf
@@ -264,60 +267,39 @@ class TopicModel:
         ===
             float: perplexity score on document completion task
         """
-        self._set_test_data(test_data)
-
         self.model.eval()
         with torch.no_grad():
-            # get \beta here
-            beta = self.model.get_beta()
-
-            # do dc here
             acc_loss = 0
             cnt = 0
-            indices_1 = torch.split(
-                torch.tensor(
-                    range(
-                        self.num_docs_test_1)),
-                self.eval_batch_size)
-            for idx, ind in enumerate(indices_1):
-                # get theta from first half of docs
-                data_batch_1 = data.get_batch(
-                    self.test_1_tokens,
-                    self.test_1_counts,
+            indices = torch.randperm(self.num_docs_test)
+            indices = torch.split(indices, self.eval_batch_size)
+            for idx, ind in enumerate(indices):
+                data_batch = data.get_batch(
+                    self.train_tokens,
+                    self.train_counts,
                     ind,
-                    self.vocabulary_size,
+                    self.vocab_size,
                     self.device)
-                sums_1 = data_batch_1.sum(1).unsqueeze(1)
+                sums = data_batch.sum(1).unsqueeze(1)
                 if self.bow_norm:
-                    normalized_data_batch_1 = data_batch_1 / sums_1
+                    normalized_data_batch = data_batch / sums
                 else:
-                    normalized_data_batch_1 = data_batch_1
-                theta, _ = self.model.get_theta(normalized_data_batch_1)
+                    normalized_data_batch = data_batch
+                recon_loss, _ = self.model(
+                    data_batch, normalized_data_batch)
 
-                # get prediction loss using second half
-                data_batch_2 = data.get_batch(
-                    self.test_2_tokens,
-                    self.test_2_counts,
-                    ind,
-                    self.vocabulary_size,
-                    self.device)
-                sums_2 = data_batch_2.sum(1).unsqueeze(1)
-                res = torch.mm(theta, beta)
-                preds = torch.log(res)
-                recon_loss = -(preds * data_batch_2).sum(1)
-
-                loss = recon_loss / sums_2.squeeze()
-                loss = loss.mean().item()
-                acc_loss += loss
+                acc_loss += torch.sum(recon_loss).item()
                 cnt += 1
 
-            cur_loss = acc_loss / cnt
-            ppl_dc = round(math.exp(cur_loss), 1)
+                if idx % self.log_interval == 0 and idx > 0:
+                    cur_loss = round(acc_loss / cnt, 2)
+
+            cur_loss = round(acc_loss / cnt, 2)
 
             if self.debug_mode:
-                print(f'Document Completion Task Perplexity: {ppl_dc}')
+                print('Document Completion Task Perplexity: {:<10.2f}'.format(cur_loss))
 
-            return ppl_dc
+            return cur_loss
 
     def get_topics(self, top_n_words=10) -> List[str]:
         """
@@ -345,7 +327,10 @@ class TopicModel:
 
             return topics
 
-    def get_most_similar_words(self, queries, n_most_similar=20) -> dict:
+    def get_most_similar_words(
+        self, 
+        queries=["computer", "sports", "religion", "man", "love", "politics", "health", "people"], n_most_similar=5
+    ) -> dict:
         """
         Gets the nearest neighborhoring words for a list of tokens. By default, returns the 20 most similar words for each token in 'queries' array.
 
@@ -372,6 +357,7 @@ class TopicModel:
             for word in queries:
                 neighbors[word] = metrics.nearest_neighbors(
                     word, self.embeddings, self.vocabulary, n_most_similar)
+                if self.debug_mode: print(f"Query {word}: {neighbors}")
 
             return neighbors
 
@@ -392,6 +378,7 @@ class TopicModel:
             self (ETM): the instance itself
         """
         self._set_training_data(train_data)
+        if test_data is not None: self._set_test_data(test_data)
 
         best_val_ppl = 1e9
         all_val_ppls = []
@@ -512,7 +499,7 @@ class TopicModel:
                     self.train_tokens,
                     self.train_counts,
                     ind,
-                    self.vocabulary_size,
+                    self.vocab_size,
                     self.device)
                 sums = data_batch.sum(1).unsqueeze(1)
                 normalized_data_batch = data_batch / sums if self.bow_norm else data_batch
@@ -565,7 +552,18 @@ class TopicModel:
             beta = self.model.get_beta().data.cpu().numpy()
             return metrics.get_topic_diversity(beta, top_n)
 
-    def _save_model(self, model_path):
+    def eval(self, metrics=['topic', 'tc', 'td', 'ppl', 'embedding']):
+        print(f"Model type      : {self.model_name}")
+        print(f"Vocab size      : {self.vocab_size}")
+        print(f"Num topics      : {self.num_topics}")
+        print(f"Train embedding : {'true' if self.train_embeddings else 'false'}")
+        if 'topic' in metrics:      print(f"Topic           : {self.get_topics()}")
+        if 'tc' in metrics:         print(f"Topic coherence : {self.get_topic_coherence():<8.4f}")
+        if 'td' in metrics:         print(f"Topic diversity : {self.get_topic_diversity()*100:<4.2f}")
+        if 'topic' in metrics:      print(f"Topic           : {self.get_topics()}")
+        if 'embedding' in metrics:  print(f"Word embedding  : {self.get_most_similar_words()}")
+
+    def save_model(self, model_path):
         assert self.model is not None, \
             'no model to save'
 
@@ -575,22 +573,10 @@ class TopicModel:
         with open(model_path, 'wb') as file:
             torch.save(self.model, file)
 
-    def _load_model(self, model_path):
+    def load_model(self, model_path):
         assert os.path.exists(model_path), \
             "model path doesn't exists"
 
         with open(model_path, 'rb') as file:
             self.model = torch.load(file)
             self.model = self.model.to(self.device)
-
-    @property
-    def num_topics(self):
-        return self.model.num_topics
-
-    @property
-    def model(self):
-        return self.__model
-
-    @model.setter
-    def model(self, model: BaseModel):
-        self.__model = model.to(self.device)

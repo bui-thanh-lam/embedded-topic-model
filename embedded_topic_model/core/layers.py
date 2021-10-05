@@ -29,9 +29,13 @@ class SVDropout2D(nn.Module):
             sigma = torch.exp(self.log_sigma)
             eps = sigma.data.new(sigma.size()).normal_()
             a = torch.ones_like(sigma) + sigma * eps
-            return torch.matmul(x, torch.diag(a))
+            x = torch.matmul(x, torch.diag(a))
+            if self.dim ==0: x = x.permute(1, 0)
+            return x
         
-        return torch.matmul(x, torch.diag((torch.exp(self.log_sigma) < self.threshold).float()))
+        x = torch.matmul(x, torch.diag((torch.exp(self.log_sigma) < self.threshold).float()))
+        if self.dim ==0: x = x.permute(1, 0)
+        return x
         
     @property
     def kl_loss(self):
